@@ -33,6 +33,7 @@ uint8_t isRetrievingMembers  = 0;
 struct DM_chat *DM_channels = NULL;
 int sequenceNumber = 0;
 
+
 void cleanup()
 {
 	freeServers(glob_servers);
@@ -69,7 +70,7 @@ client_websocket_t *createClient(struct discord_callbacks *callbacks, char *toke
 	sleep(5);
 
 	// TODO Make this grab the gateway instead of hard-coding it
-	websocket_connect(myWebSocket, "wss://gateway.discord.gg/?v=5&encoding=json");
+	websocket_connect(myWebSocket, "wss://gateway.discord.gg/?v=6&encoding=json");
 
 	sleep(2);
 	
@@ -196,6 +197,10 @@ void handleEventDispatch(client_websocket_t *socket, cJSON *root)
 			// Get's returned after OP IDENTIFY. Recieved information about guilds/users etc & ready to start recieving messages/etc.
 			handleOnReady(socket, root);
 		}
+		else if (strcmp(eventName, "GUILD_CREATE") == 0) 
+		{
+			handleGuildCreate(root);
+		}
 		else if (strcmp(eventName, "GUILD_MEMBERS_CHUNK") == 0)
 		{
 			//handleGuildMemberChunk(root); TODO switched to request-based
@@ -241,84 +246,41 @@ void handleIdentify(client_websocket_t *socket)
 
 }
 
-void handleOnReady(client_websocket_t *socket, cJSON *root)
-{
-	fprintf(stderr, "Successfully established connection!\n");
-	
-	// Required? Get the data part.
-	root = cJSON_GetObjectItemCaseSensitive(root, "d");
-	// Get the private messages / DMs
-	cJSON *DMs = cJSON_GetObjectItemCaseSensitive(root, "private_channels");
-	
-	// Get the friends
-	cJSON *friends = cJSON_GetObjectItemCaseSensitive(root, "relationships");
-	
-	cJSON *DM = DMs->child;
+struct server* loadServerData(cJSON* guild, struct server* server, bool guildCreate) {
+	// NULL server, make new.
 
-	while (DM)
-	{
-		cJSON *recipientObject = cJSON_GetObjectItemCaseSensitive(DM, "recipient");
-		uint64_t recipientId = strtoull(cJSON_GetObjectItemCaseSensitive(recipientObject, "id")->valuestring, NULL, 10);
-
-		cJSON *recipientUsernameObject = cJSON_GetObjectItemCaseSensitive(recipientObject, "username");
-		char *username = malloc(strlen(recipientUsernameObject->valuestring) + 1);
-		strcpy(username, recipientUsernameObject->valuestring);
+	cJSON *guildUnavailableObject = cJSON_GetObjectItemCaseSensitive(guild, "unavailable");
+	bool guildUnavailable = cJSON_IsTrue(guildUnavailableObject);
+	uint64_t guildId;
+	if (server == NULL) {
+		server = malloc(sizeof(struct server));
 		
-		uint64_t channelId = strtoull(cJSON_GetObjectItemCaseSensitive(DM, "id")->valuestring, NULL, 10);
-		struct private_channel *channel = malloc(sizeof(struct private_channel));
-		struct user *recipient = malloc(sizeof(struct user));
-		
-		recipient->username = username;
-		recipient->id = recipientId;
-		
-		channel->recipient = recipient;
-		channel->id = channelId;
-		
-		struct DM_chat *channelElement = malloc(sizeof(struct DM_chat));
-		
-		channelElement->channel = channel;
-
-		channelElement->next = DM_channels;
-		DM_channels = channelElement;
-
-		DM = DM->next;
-	}
-
-	// Get the servers the user is in
-	cJSON *guilds = cJSON_GetObjectItemCaseSensitive(root, "guilds");
-	
-	// Request further info about guilds
-	cJSON *guild = guilds->child;
-
-	while (guild)
-	{
-		cJSON *guildNameObject = cJSON_GetObjectItemCaseSensitive(guild, "name");
 		cJSON *guildIdObject = cJSON_GetObjectItemCaseSensitive(guild, "id");
+		
+		guildId = PARSE_SNOWFLAKE(guildIdObject->valuestring)
+		// TODO: Find out if snowflakes can be numbers.
+		if(cJSON_IsNumber(guildIdObject)) {
+			guildId = (uint64_t)guildIdObject->valuedouble;
+		}
+
+		server->serverId = guildId;
+		server->channels = NULL;
+		server->users = NULL;
+		server->roles = NULL;
+	} else {
+		guildId = server->serverId;
+	}
+	server->unavailable = guildUnavailable;
+
+	if (!guildUnavailable) {
+		
+		cJSON *guildNameObject = cJSON_GetObjectItemCaseSensitive(guild, "name");
 		cJSON *guildRolesObject = cJSON_GetObjectItemCaseSensitive(guild, "roles");
 		cJSON *guildChannelsObject = cJSON_GetObjectItemCaseSensitive(guild, "channels");
 
-		uint64_t guildId = strtoull((const char *)guildIdObject->valuestring, NULL, 10);
-		
-		if(cJSON_IsNumber(guildIdObject))
-		{
-			guildId = (uint64_t)guildIdObject->valuedouble;
-		}
-		else
-		{
-			fprintf(stderr, "Error while processing JSON!\n");
-		}
-		
-		// Create struct to hold server
-		struct server *server = malloc(sizeof(struct server));
-		
 		server->name = malloc(strlen(guildNameObject->valuestring) + 1);
 		strcpy(server->name, guildNameObject->valuestring);
-		
-		server->serverId = guildId;
-		
-		// Avoid garbage values / not intitialized errors
-		server->channels = NULL;
-		
+				
 		cJSON *channelObject = guildChannelsObject->child;
 		while(channelObject)
 		{
@@ -352,15 +314,7 @@ void handleOnReady(client_websocket_t *socket, cJSON *root)
 
 			channelObject = channelObject->next;
 		}
-
-		server->users = NULL;
-
-		server->next = glob_servers;
-		glob_servers = server;
 		
-		// Set the roles to NULL so the loop can use server->roles for next without worrying about using an uninitialized variable
-		server->roles = NULL;
-
 		cJSON *roleObject = guildRolesObject->child;
 		while (roleObject)
 		{
@@ -387,84 +341,27 @@ void handleOnReady(client_websocket_t *socket, cJSON *root)
 
 			roleObject = roleObject->next;
 		}
-
-		// Go to the next guild
-		guild = guild->next;
-	}
-	
-	struct connection connection;
-	connection.webSocket = socket;
-	// Spawn the heartbeat thread
-	pthread_create(&heartbeatThread, NULL, heartbeatFunction, (void*)socket);
-	// As we won't be joining, we can detach to avoid memory leakage
-	pthread_detach(heartbeatThread);
-
-	// Successfully connected! Callback time
-	if (cli_callbacks != NULL && cli_callbacks->login_complete != NULL)
-		cli_callbacks->login_complete(connection, glob_servers);
-
-}
-
-void loadGuild(client_websocket_t *socket, uint64_t guildId)
-{
-	char packet[128];
-	// Send a guild sync (which should return member chunks?)
-	sprintf(packet, "{\"op\":12,\"d\":[\"%lu\"]}", guildId);
-
-	websocket_send(socket, packet, strlen(packet), 0);
-}
-
-void handleGuildMemberChunk(cJSON *root)
-{
-	// Go from ugly global varialbe -> local variable
-	struct server *servers = glob_servers;
-	
-	// Set the state to retrieving members
-	isRetrievingMembers = 1;
-
-	root = cJSON_GetObjectItemCaseSensitive(root, "d");
-
-	cJSON *guildIdItem = cJSON_GetObjectItemCaseSensitive(root, "id");
-	cJSON *membersObject = cJSON_GetObjectItemCaseSensitive(root, "members");
-	cJSON *statusesObject = cJSON_GetObjectItemCaseSensitive(root, "presences");
-
-	cJSON *memberObject = membersObject->child;
-	
-	// Grab the guild/server it's id	
-	uint64_t guildId = strtoull((const char *)guildIdItem->valuestring, NULL, 10);
-	
-	struct server *server = NULL;
-
-	if (servers == NULL)
-	{
-		fprintf(stderr, "Error: No servers!\n");
-		return;
-	}
-	
-	
-	struct server *_server = glob_servers;
-	while (_server)
-	{
-		if (_server->serverId == guildId)
-		{
-			server = _server;
-			break;
+		
+		if (guildCreate) { 
+			loadServerMembers(server, 
+							  cJSON_GetObjectItemCaseSensitive(guild, "members"),
+							  cJSON_GetObjectItemCaseSensitive(guild, "presences")
+							  );
+			
 		}
-		_server = _server->next;
-	}
-	
-	if (server == NULL)
-	{
-		// Couldn't find server? Something went wrong!
-		fprintf(stderr, "Unable to find server!\n");
-	}
 
+	}
+	return server;
+}
+
+void loadServerMembers(struct server* server, cJSON* membersObject, cJSON* statusesObject) {
+	int usersAdded = 0;
+	
+	cJSON* memberObject = membersObject->child;
+	
 	// Linked list to hold the members in this chunk
 	struct user *members = NULL;
 	
-	// Debug counter TODO remove
-	int usersAdded = 0;
-
 	while (memberObject)
 	{
 		cJSON *userObject = cJSON_GetObjectItemCaseSensitive(memberObject, "user");
@@ -479,7 +376,7 @@ void handleGuildMemberChunk(cJSON *root)
 		// Allocate username memory + copy it
 		user->username = malloc(strlen(usernameObject->valuestring) + 1);
 		strcpy(user->username, usernameObject->valuestring);
-		
+				
 		// Convert the id string into a decimal uint64_t and store it in the id field
 		user->id = strtoull((const char *)userIdObject->valuestring, NULL, 10);
 
@@ -568,6 +465,154 @@ void handleGuildMemberChunk(cJSON *root)
 		memberObject = memberObject->next;
 		usersAdded++; // TODO
 	}
+}
+
+void addServer(struct server* server) {
+	server->next = glob_servers;
+	glob_servers = server;
+}
+
+void handleOnReady(client_websocket_t *socket, cJSON *root)
+{
+	fprintf(stderr, "Successfully established connection!\n");
+	
+	// Required? Get the data part.
+	root = cJSON_GetObjectItemCaseSensitive(root, "d");
+	// Get the private messages / DMs
+	cJSON *DMs = cJSON_GetObjectItemCaseSensitive(root, "private_channels");
+	
+	// Get the friends
+	cJSON *friends = cJSON_GetObjectItemCaseSensitive(root, "relationships");
+	
+	cJSON *DM = DMs->child;
+
+	while (DM)
+	{
+		cJSON *recipientObject = cJSON_GetObjectItemCaseSensitive(DM, "recipient");
+		uint64_t recipientId = strtoull(cJSON_GetObjectItemCaseSensitive(recipientObject, "id")->valuestring, NULL, 10);
+
+		cJSON *recipientUsernameObject = cJSON_GetObjectItemCaseSensitive(recipientObject, "username");
+		char *username = malloc(strlen(recipientUsernameObject->valuestring) + 1);
+		strcpy(username, recipientUsernameObject->valuestring);
+		
+		uint64_t channelId = strtoull(cJSON_GetObjectItemCaseSensitive(DM, "id")->valuestring, NULL, 10);
+		struct private_channel *channel = malloc(sizeof(struct private_channel));
+		struct user *recipient = malloc(sizeof(struct user));
+		
+		recipient->username = username;
+		recipient->id = recipientId;
+		
+		channel->recipient = recipient;
+		channel->id = channelId;
+		
+		struct DM_chat *channelElement = malloc(sizeof(struct DM_chat));
+		
+		channelElement->channel = channel;
+
+		channelElement->next = DM_channels;
+		DM_channels = channelElement;
+
+		DM = DM->next;
+	}
+
+	// Get the servers the user is in
+	cJSON *guilds = cJSON_GetObjectItemCaseSensitive(root, "guilds");
+	
+	// Request further info about guilds
+	cJSON *guild = guilds->child;
+
+	while (guild)
+	{
+		
+		addServer(loadServerData(guild, NULL, false));
+
+		// Go to the next guild
+		guild = guild->next;
+	}
+	
+	struct connection connection;
+	connection.webSocket = socket;
+	// Spawn the heartbeat thread
+	pthread_create(&heartbeatThread, NULL, heartbeatFunction, (void*)socket);
+	// As we won't be joining, we can detach to avoid memory leakage
+	pthread_detach(heartbeatThread);
+
+	// Successfully connected! Callback time
+	if (cli_callbacks != NULL && cli_callbacks->login_complete != NULL)
+		cli_callbacks->login_complete(connection, glob_servers);
+
+}
+
+void loadGuild(client_websocket_t *socket, uint64_t guildId)
+{
+	char packet[128];
+	// Send a guild sync (which should return member chunks?)
+	sprintf(packet, "{\"op\":12,\"d\":[\"%lu\"]}", guildId);
+
+	websocket_send(socket, packet, strlen(packet), 0);
+}
+
+void handleGuildCreate(cJSON *root) {
+	root = cJSON_GetObjectItemCaseSensitive(root, "d");
+
+	cJSON *guildIdObject = cJSON_GetObjectItemCaseSensitive(root, "id");
+	uint64_t guildId = PARSE_SNOWFLAKE(guildIdObject->valuestring)
+	struct server* server = getServer(guildId);
+	if (server == NULL) {
+		addServer(loadServerData(root, NULL, true));
+	} else {
+		loadServerData(root, server, true);
+	}
+}
+
+struct server* getServer(uint64_t serverId) {
+	// TODO: Should use some kind of map.
+	struct server *server = glob_servers;
+	while (server)
+	{
+		if (server->serverId == serverId)
+		{
+			return server;
+		}
+		server = server->next;
+	}
+	return NULL;
+}
+
+void handleGuildMemberChunk(cJSON *root)
+{
+	// Go from ugly global varialbe -> local variable
+	struct server *servers = glob_servers;
+	
+	// Set the state to retrieving members
+	isRetrievingMembers = 1;
+
+	root = cJSON_GetObjectItemCaseSensitive(root, "d");
+
+	cJSON *guildIdItem = cJSON_GetObjectItemCaseSensitive(root, "id");
+	cJSON *membersObject = cJSON_GetObjectItemCaseSensitive(root, "members");
+	cJSON *statusesObject = cJSON_GetObjectItemCaseSensitive(root, "presences");
+	
+	// Grab the guild/server it's id	
+	uint64_t guildId = strtoull((const char *)guildIdItem->valuestring, NULL, 10);
+	
+
+	if (servers == NULL)
+	{
+		fprintf(stderr, "Error: No servers!\n");
+		return;
+	}
+	
+	struct server *server = getServer(guildId);
+	
+	if (server == NULL)
+	{
+		// Couldn't find server? Something went wrong!
+		fprintf(stderr, "Unable to find server!\n");
+	}
+
+	
+	loadServerMembers(server, membersObject, statusesObject);
 }
 
 void handlePresenceUpdate(cJSON *root)
@@ -1103,7 +1148,7 @@ struct messages *getMessagesInChannel(uint64_t channel, int amount)
 		if (!root->child)
 			return NULL;
 
-		cJSON *channelIdObject = cJSON_GetObjectItemCaseSensitive(root->child, "channel_id");
+		cJSON *channelIdObject = cJSON_GetObjectItemCaseSensitive(root->child, "id");
 
 		uint64_t channelId = strtoull((const char *)channelIdObject->valuestring, NULL, 10);
 

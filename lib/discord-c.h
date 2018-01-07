@@ -1,14 +1,17 @@
 #pragma once
 #include "websocket.h"
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
-#include "pthread.h"
-#include "cJSON.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <pthread.h>
+#include <cJSON.h>
 
-#include "signal.h"
+#include <signal.h>
 
 #include <curl/curl.h>
+
+#define PARSE_SNOWFLAKE(snowflake) strtoull((const char *)snowflake, NULL, 10);
 
 // Enum to store a user's status
 enum memberStatus
@@ -30,6 +33,7 @@ void *thinkFunction(void *websocket);
 void handleEventDispatch(client_websocket_t *socket, cJSON *root);
 void handleIdentify(client_websocket_t *socket);
 void handleOnReady(client_websocket_t *socket, cJSON *root);
+void handleGuildCreate(cJSON *root);
 void handleGuildMemberChunk(cJSON *root);
 void handleMessagePosted(cJSON *root);
 void handleMessageUpdated(cJSON *root);
@@ -132,6 +136,8 @@ struct server
         char *name;
         // Server id
         uint64_t serverId;
+        
+        bool unavailable;
 
         // Channels
         struct server_channel *channels;
@@ -195,6 +201,8 @@ typedef void (*discord_message_posted_callback)(struct message message); // TODO
 typedef void (*discord_message_updated_callback)(struct message message);
 */
 
+struct server* getServer(uint64_t serverId);
+
 struct discord_callbacks {
         discord_login_complete_callback login_complete;
         discord_memberfetch_complete_callback users_found;
@@ -204,6 +212,8 @@ struct discord_callbacks {
 	discord_DM_message_posted_callback DM_posted;
 //      websocket_connection_error_callback on_connection_error;
 };
+
+void loadServerMembers(struct server* server, cJSON* membersObject, cJSON* statusesObject);
 
 void cleanup();
 

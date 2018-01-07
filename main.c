@@ -33,12 +33,12 @@ int main(int argc, char *argv[])
 	callbacks.presence_updated = NULL;
 	callbacks.DM_posted = onDMPostedCallback;
 
-	client_websocket_t *socket = createClient(&callbacks, "<YOUR TOKEN HERE>");
+	client_websocket_t *socket = createClient(&callbacks, "MjUxODI4NzUxOTc1ODQxNzkz.DTJRjg.Ic8SD5WaiYvtYwRf5gvuJkgXpJ4");
 
 	// Test send message
 	sleep(20);
-	sendMessage("Hello, world!", 332535524869013505, 0);
-	getMessagesInChannel(332535524869013505, 10);
+	sendMessage("Hello, world!", 148403597464436736, 0);
+	getMessagesInChannel(148403597464436736, 10);
 	
 	// Keep the main thread occupied so the program doesn't exit
 	while(1)
@@ -60,7 +60,7 @@ int main(int argc, char *argv[])
 			return 0;
 		}
 		
-		sendMessage(characters, 181866934353133570, 0);
+		sendMessage(characters, 148403597464436736, 0);
 	//	sleep(1);
 	}
 

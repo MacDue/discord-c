@@ -192,7 +192,7 @@ void websocket_connect(client_websocket_t* client, const char* address) {
 	//info.port = 80;
 	info.ssl_connection = 1;
 	//info.ssl_connection = 0;
-	info.path = "/?v=5&encoding=json";
+	info.path = "/?v=6&encoding=json";
 	info.host = info.address;
 	info.origin = info.address;
 	info.protocol = "wss"; // ?
